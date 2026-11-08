@@ -91,6 +91,19 @@ def test_inconclusive_engagement_drop_keeps_verifying(env):
     assert s.one("SELECT 1 FROM decisions WHERE kind='fix_inconclusive'")
 
 
+def test_a_noisy_drop_beyond_the_margin_is_not_verified_yet(env):
+    """3 pp below baseline on 350 calls is not significant (z ~ -1.1), but it is beyond the 2 pp margin, so the
+    fix stays under verification instead of being declared verified on too little data."""
+    s, sim, g, inc = env
+    set_prompt(sim, s, g, "P3", "controller_approved")
+    agg(s, 10, "P3", conn=350, flags=3, eng=164)                  # 46.9% vs 50%: drop 3.1 pp
+    row = open_incident(s, inc, {"chosen": "P3", "applied_minute": 600})
+    sim.minute = 14 * 60
+    inc.progress_hallucination(sim.minute, row)
+    row = s.one("SELECT * FROM incidents WHERE incident_id='inc-0001'")
+    assert row["status"] == "verifying" and row["resolved_minute"] is None
+
+
 def test_verification_uses_the_workflows_own_engagement_margin(tmp_path):
     """A pickup-primary workflow allowing only a 0.5 pp engagement drop: a statistically clear 1.5 pp drop must
     not be 'verified' (the old code compared against a hard-coded 2 pp)."""

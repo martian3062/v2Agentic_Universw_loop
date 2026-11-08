@@ -305,6 +305,14 @@ class Incidents:
             if choice is None:
                 return   # stays open; _choose_fix pages if no candidate validates
             self._file_prompt_fix(minute, wid, iid, data, choice, current)
+        elif st == "proposed" and not self.gov.open_intents(owner) and current != data.get("chosen"):
+            # defensive: the request ended without this owner hearing back (cancels now run the owner callback,
+            # but a store written by an earlier version may still hold such a request)
+            data.pop("chosen", None)
+            self._save(iid, "retry", data)
+            with self.s:
+                self.s.record(minute, wid, "fix_request_cancelled",
+                              "prompt-fix request was cancelled; choosing again on fresh data", None, ref=owner)
         elif st == "verifying":
             if current != data.get("chosen"):
                 # the prompt under verification is no longer live: judge whatever is live now
@@ -349,8 +357,18 @@ class Incidents:
                                   f"{current} fixed flags but engagement fell {drop:.1%} below baseline (z={ez:.1f}), "
                                   f"beyond this workflow's {margin:.1%} margin; trying the next candidate", result,
                                   ref=owner)
-            elif drop > margin and ez <= -1.5 and n < S.HAL_VERIFY_MAX_CONNECTED:
-                # flags are fine but engagement looks lower without being conclusive either way: not verified yet
+            elif drop > margin and n >= S.HAL_VERIFY_MAX_CONNECTED and ez <= -1.96:
+                # at the full verification sample, a drop beyond the margin that is significant fails the fix
+                data["tried"].append(data.pop("chosen"))
+                self._save(iid, "retry", data)
+                with self.s:
+                    self.s.record(minute, wid, "fix_regressed",
+                                  f"{current} fixed flags but after {n} calls engagement is still {drop:.1%} below "
+                                  f"baseline (z={ez:.1f}), beyond this workflow's {margin:.1%} margin; trying the next "
+                                  "candidate", result, ref=owner)
+            elif drop > margin and n < S.HAL_VERIFY_MAX_CONNECTED:
+                # flags are fine but engagement reads lower than the margin allows: not verified yet, whatever the
+                # noise says. The fix is already live, so waiting only keeps the incident open longer.
                 if not data.get("extended_logged"):
                     data["extended_logged"] = True
                     self._save(iid, "verifying", data)

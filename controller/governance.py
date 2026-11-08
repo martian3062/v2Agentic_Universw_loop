@@ -40,6 +40,9 @@ from .util import apply_ops, changed_dims, config_diff, fmt, max_shift, minute_o
 log = logging.getLogger("controller.gov")
 
 IN_FLIGHT = ("prepared", "pending", "approved")
+# Looked up every tick. 'dead' (dead-lettered: no more sends) and 'cancelling' (an operator asked to cancel it) may
+# still have landed at the simulator, so they are never dropped from reconciliation until a lookup settles them.
+RECONCILED = IN_FLIGHT + ("dead", "cancelling")
 
 
 class Governance:
@@ -47,6 +50,7 @@ class Governance:
         self.s, self.sim, self.wfs = store, sim, workflows
         self._cfg: dict[str, tuple[int, dict]] = {}
         self.callbacks = {}            # owner prefix -> object with on_applied / on_returned
+        self.leases = None             # controller/leases.py; set by the loop, None in unit tests
         if self.s.get("nonce") is None:
             with self.s:
                 self.s.set("nonce", secrets.token_hex(3))
@@ -138,13 +142,13 @@ class Governance:
 
     # ------------------------------------------------------------ reconciliation
     def reconcile(self, minute: int):
-        rows = self.s.q(f"SELECT * FROM proposals WHERE status IN {IN_FLIGHT} ORDER BY created_minute")
+        rows = self.s.q(f"SELECT * FROM proposals WHERE status IN {RECONCILED} ORDER BY created_minute")
         listed: dict[str, dict] = {}
         for p in rows:
             # one proposal's failure (a simulator error, or an owner callback raising) must not block the others;
             # its step rolled back, so the next tick replays it
             try:
-                if p["status"] == "prepared":
+                if p["status"] in ("prepared", "dead", "cancelling"):
                     self._resolve_prepared(minute, p, listed)
                 else:
                     self._on_status(minute, p, self.sim.approval(p["approval_id"]))
@@ -160,7 +164,9 @@ class Governance:
                 self.s.resolve_alert(f"reconcile_failed:{p['proposal_id']}", minute)
 
     def _resolve_prepared(self, minute: int, p, listed: dict):
-        """A request we wrote down but may or may not have sent. Ask the simulator."""
+        """A request we wrote down but may or may not have sent. Ask the simulator. Found: adopt it, whatever our
+        status says (a dead-lettered request whose last send landed is tracked from here on like any other). Not
+        found: 'prepared' is (re-)sent on its backoff slot, 'dead' waits for an operator, 'cancelling' is cancelled."""
         wid = p["workflow_id"]
         if p["path"] == "approval":
             if wid not in listed:
@@ -172,17 +178,57 @@ class Governance:
                              "WHERE proposal_id=?", (a["approval_id"], minute_of(a["created_at"]), p["proposal_id"]))
                     self.s.record(minute, wid, "reconciled", f"found {p['proposal_id']} as {a['approval_id']}",
                                   a, proposal_id=p["proposal_id"], approval_id=a["approval_id"])
+                    self._landed_late(minute, p)
                 self._on_status(minute, self.s.one("SELECT * FROM proposals WHERE proposal_id=?",
                                                    (p["proposal_id"],)), a)
-            else:
+            elif p["status"] == "cancelling":
+                self._finish_cancel(minute, p)
+            elif self._due(p, minute):
                 self._send_approval(minute, p)
         else:
             hist = self.sim.config_history(wid)
             hit = [h for h in hist if h.get("proposal_id") == p["proposal_id"]]
             if hit:
-                self._mark_applied(minute, p, hit[0]["version"], via="reconciled auto-apply")
-            else:
+                with self.s:
+                    self._mark_applied(minute, p, hit[0]["version"], via="reconciled auto-apply")
+                    self._landed_late(minute, p)
+            elif p["status"] == "cancelling":
+                self._finish_cancel(minute, p)
+            elif self._due(p, minute):
                 self._send_auto(minute, p)
+
+    @staticmethod
+    def _due(p, minute: int) -> bool:
+        """Lookup happens every tick; a re-send waits for its backoff slot. A dead request is never re-sent by the
+        loop (only `replay` puts it back to 'prepared')."""
+        return p["status"] == "prepared" and (p["next_send_minute"] is None or minute >= p["next_send_minute"])
+
+    def _landed_late(self, minute: int, p):
+        """Caller holds the transaction. A request we had stopped sending turned out to have landed."""
+        if p["status"] not in ("dead", "cancelling"):
+            return
+        pid = p["proposal_id"]
+        self.s.record(minute, p["workflow_id"], "request_landed",
+                      f"{pid} was {p['status']} but had landed at the simulator; adopted and tracked from here on"
+                      + ("; the operator's cancel is moot" if p["status"] == "cancelling" else ""), None,
+                      proposal_id=pid)
+        self.s.resolve_alert(f"dead:{pid}", minute)
+
+    def _finish_cancel(self, minute: int, p):
+        """An operator cancelled a dead request and this tick's lookup confirms it never landed: hand its intents
+        back to their owners (with their callbacks), atomically with the status change."""
+        pid = p["proposal_id"]
+        with self.s:
+            self.s.x("UPDATE proposals SET status='cancelled' WHERE proposal_id=?", (pid,))
+            self.s.record(minute, p["workflow_id"], "request_cancelled",
+                          f"{pid}: confirmed not at the simulator; cancelled, intents handed back", None,
+                          proposal_id=pid)
+            self._return_intents(minute, p, "cancelled", ["dead request cancelled by operator"])
+
+    def fence(self, wid: str):
+        """Last check before any write to the simulator: this process must still hold the workflow's lease."""
+        if self.leases is not None:
+            self.leases.require(f"workflow:{wid}")
 
     def _on_status(self, minute: int, p, a: dict):
         st = a["status"]
@@ -220,6 +266,7 @@ class Governance:
     def _apply(self, minute: int, p):
         wid = p["workflow_id"]
         try:
+            self.fence(wid)
             r = self.sim.apply(wid, p["approval_id"])
         except ApiError as e:
             if e.error == "stale_base_version":
@@ -411,6 +458,7 @@ class Governance:
         wid = p["workflow_id"]
         body = self._wire_body(p)
         try:
+            self.fence(wid)
             a = self.sim.propose(body)
         except ApiError as e:
             if e.error == "duplicate_proposal_id":
@@ -462,6 +510,7 @@ class Governance:
                 "proposed_config": json.loads(p["proposed_config"]), "rationale": b["rationale"],
                 "evidence": b.get("_evidence_full") or {}}
         try:
+            self.fence(wid)
             r = self.sim.auto_apply(wid, body)
         except ApiError as e:
             if e.error == "duplicate_proposal_id":
@@ -497,11 +546,31 @@ class Governance:
     def _note_uncertain(self, minute: int, p, e: ApiError):
         """Leave the proposal 'prepared'. Every reconcile looks it up by proposal_id (GET /approvals, or config
         history for auto-apply), adopts it if it landed and re-sends it with the same id if it did not. Nothing is
-        declared failed on an ambiguous error."""
+        declared failed on an ambiguous error. Re-sends back off (15, 30, 60, then 120 simulated minutes); after
+        REQUEST_MAX_ATTEMPTS the proposal is dead-lettered: no more sends, but it is still looked up every tick (the
+        last send may have landed with its response lost; if so it is adopted). A human is paged and its intents
+        stay parked (owners wait) until it turns up or `python -m controller replay` re-sends or cancels it."""
+        attempts = (p["send_attempts"] or 0) + 1
+        wid, pid = p["workflow_id"], p["proposal_id"]
         with self.s:
-            self.s.record(minute, p["workflow_id"], "request_uncertain",
-                          f"{p['proposal_id']}: {e.error} ({e.status}); outcome unknown, will reconcile by proposal_id",
-                          {"detail": str(e.detail)[:300]}, proposal_id=p["proposal_id"])
+            if attempts >= S.REQUEST_MAX_ATTEMPTS:
+                self.s.x("UPDATE proposals SET status='dead', send_attempts=?, next_send_minute=NULL, reasons=? "
+                         "WHERE proposal_id=?", (attempts, json.dumps([f"{e.error}: {e.detail}"]), pid))
+                self.s.record(minute, wid, "request_dead",
+                              f"{pid}: outcome still unknown after {attempts} sends ({e.error}); dead-lettered: no "
+                              "more sends, still looked up every tick, intents parked until it turns up or an "
+                              "operator replays or cancels it", {"detail": str(e.detail)[:300]}, proposal_id=pid)
+                self.s.alert(f"dead:{pid}", minute, "page", wid,
+                             f"request {pid} dead-lettered after {attempts} sends ({e.error}). Check the simulator, "
+                             f"then `python -m controller replay --proposal {pid}` (or --cancel)")
+                return
+            backoff = min(S.REQUEST_RETRY_CAP_MIN, S.REQUEST_RETRY_BASE_MIN * 2 ** (attempts - 1))
+            self.s.x("UPDATE proposals SET send_attempts=?, next_send_minute=? WHERE proposal_id=?",
+                     (attempts, minute + backoff, pid))
+            self.s.record(minute, wid, "request_uncertain",
+                          f"{pid}: {e.error} ({e.status}); outcome unknown (send {attempts}/{S.REQUEST_MAX_ATTEMPTS}), "
+                          f"looked up every tick, re-sent with the same id after {backoff} min if it never landed",
+                          {"detail": str(e.detail)[:300]}, proposal_id=pid)
 
     # ------------------------------------------------------------ events
     def on_event(self, e: dict):
@@ -530,6 +599,32 @@ class Governance:
     def describe(self, minute: int) -> str:
         return ", ".join(f"{p['workflow_id']}:{p['status']}" for p in
                          self.s.q(f"SELECT workflow_id,status FROM proposals WHERE status IN {IN_FLIGHT}")) or "none"
+
+
+def replay(store: Store, proposal_id: str, minute: int, cancel: bool = False) -> str:
+    """Operator action on a dead-lettered request (works on the store alone, so it can run beside the loop).
+    replay: back to 'prepared' with fresh attempts and the SAME proposal_id, so a request that did land after all
+    is adopted rather than duplicated. cancel: marked 'cancelling'; the loop's next lookup settles it. If the
+    simulator has it after all, it is adopted and tracked (a cancel can never orphan a live approval); if not, it
+    is cancelled and its intents are handed back to their owners, who re-decide on fresh data."""
+    p = store.one("SELECT * FROM proposals WHERE proposal_id=?", (proposal_id,))
+    if not p:
+        return f"no proposal {proposal_id}"
+    if p["status"] != "dead":
+        return f"{proposal_id} is {p['status']}, not dead; nothing to do"
+    with store:
+        if cancel:
+            store.x("UPDATE proposals SET status='cancelling' WHERE proposal_id=?", (proposal_id,))
+            what = ("cancel requested; the next tick confirms with the simulator that it never landed, then hands "
+                    "its intents back (if it did land, it is adopted and tracked instead)")
+        else:
+            store.x("UPDATE proposals SET status='prepared', send_attempts=0, next_send_minute=NULL "
+                    "WHERE proposal_id=?", (proposal_id,))
+            what = "back to prepared; the next tick looks it up and re-sends it with the same id"
+        store.record(minute, p["workflow_id"], "operator_replay" if not cancel else "operator_cancel",
+                     f"{proposal_id} {what}", None, proposal_id=proposal_id)
+        store.resolve_alert(f"dead:{proposal_id}", minute)
+    return f"{proposal_id} {what}"
 
 
 def fmt_minute(m):

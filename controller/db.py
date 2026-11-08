@@ -73,7 +73,12 @@ CREATE TABLE IF NOT EXISTS proposals (
   proposal_id TEXT PRIMARY KEY, workflow_id TEXT, path TEXT, status TEXT, base_version INTEGER,
   proposed_config TEXT, body TEXT, approval_id TEXT, intents TEXT, urgent INTEGER,
   created_minute INTEGER, submitted_minute INTEGER, decided_minute INTEGER, applied_minute INTEGER,
-  applied_version INTEGER, reasons TEXT, apply_by INTEGER, expires_at INTEGER);
+  applied_version INTEGER, reasons TEXT, apply_by INTEGER, expires_at INTEGER,
+  send_attempts INTEGER DEFAULT 0, next_send_minute INTEGER);   -- retry backoff for uncertain sends
+
+-- one controller process per world and per workflow (controller/leases.py)
+CREATE TABLE IF NOT EXISTS leases (
+  name TEXT PRIMARY KEY, owner TEXT, host TEXT, pid INTEGER, heartbeat REAL);
 
 CREATE TABLE IF NOT EXISTS incidents (
   incident_id TEXT PRIMARY KEY, workflow_id TEXT, kind TEXT, key TEXT, status TEXT, opened_minute INTEGER,
@@ -126,7 +131,12 @@ class Store:
         self._depth = 0
 
     def _migrate(self):
-        """Stores created before cohorts were keyed per workflow: re-key them in place."""
+        """Bring stores created by earlier versions up to the current schema, in place."""
+        cols = {r["name"] for r in self.db.execute("PRAGMA table_info(proposals)")}
+        for col, decl in (("send_attempts", "INTEGER DEFAULT 0"), ("next_send_minute", "INTEGER")):
+            if col not in cols:
+                self.db.execute(f"ALTER TABLE proposals ADD COLUMN {col} {decl}")
+        # cohorts re-keyed per workflow
         pk = [r["name"] for r in self.db.execute("PRAGMA table_info(cohorts)") if r["pk"]]
         if pk == ["cohort_id"]:
             self.db.executescript("""

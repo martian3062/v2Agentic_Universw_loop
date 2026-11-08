@@ -21,7 +21,17 @@ def _dist(d: dict) -> str:
     return ", ".join(f"{k} {v:.0%}" for k, v in sorted(d.items(), key=lambda kv: -kv[1]))
 
 
-def why(s: Store, wid: str, at: int) -> str:
+def tenant_workflows(s: Store, tenant: str | None) -> set | None:
+    """Workflows a tenant may see; None means unscoped (the operator). Unknown tenant: an empty set."""
+    if not tenant:
+        return None
+    return {w for w, spec in (s.get("workflows") or {}).items() if spec.get("tenant_id") == tenant}
+
+
+def why(s: Store, wid: str, at: int, tenant: str | None = None) -> str:
+    scope = tenant_workflows(s, tenant)
+    if scope is not None and wid not in scope:
+        return f"{wid} is not a workflow of {tenant}; nothing to show"
     out = []
     rows = s.q("SELECT * FROM config_versions WHERE workflow_id=? ORDER BY version", (wid,))
     live = None
@@ -85,12 +95,13 @@ def why(s: Store, wid: str, at: int) -> str:
     return "\n".join(out)
 
 
-def view(s: Store, wid: str | None = None) -> str:
+def view(s: Store, wid: str | None = None, tenant: str | None = None) -> str:
     wfs = s.get("workflows") or {}
+    scope = tenant_workflows(s, tenant)
     now = s.get("last_minute", 0)
-    out = [f"SUPERVISOR VIEW at {fmt(now)}"]
+    out = [f"SUPERVISOR VIEW at {fmt(now)}" + (f" for {tenant}" if tenant else "")]
     for w in sorted(wfs):
-        if wid and w != wid:
+        if (wid and w != wid) or (scope is not None and w not in scope):
             continue
         cv = s.one("SELECT * FROM config_versions WHERE workflow_id=? AND config IS NOT NULL ORDER BY version DESC "
                    "LIMIT 1", (w,))
@@ -142,11 +153,12 @@ def view(s: Store, wid: str | None = None) -> str:
             out.append(f"   {fmt(r['applied_minute'])} v{r['version']} by {r['actor']} "
                        f"({', '.join(_j(r['changed_dims']) or [])}) {summ}")
     al = s.q("SELECT * FROM alerts WHERE resolved_minute IS NULL ORDER BY severity, minute")
+    # a tenant sees alerts on its own workflows only; platform-wide alerts (workflow None) are the operator's
+    al = [a for a in al if (not wid or a["workflow_id"] in (wid, None)) and
+          (scope is None or a["workflow_id"] in scope)]
     out.append("")
     out.append(f"OPEN ALERTS ({len(al)}):")
     for a in al:
-        if wid and a["workflow_id"] not in (wid, None):
-            continue
         out.append(f"  [{a['severity']}] {fmt(a['minute'])} {a['workflow_id'] or '-'}: {a['message']}")
     return "\n".join(out)
 
@@ -190,8 +202,12 @@ def health(s: Store) -> str:
     return "\n".join(out)
 
 
-def log_lines(s: Store, wid=None, kind=None, limit=50) -> str:
+def log_lines(s: Store, wid=None, kind=None, limit=50, tenant: str | None = None) -> str:
     sql, args = "SELECT * FROM decisions WHERE 1=1", []
+    scope = tenant_workflows(s, tenant)
+    if scope is not None:
+        sql += f" AND workflow_id IN ({','.join('?' * len(scope)) or 'NULL'})"
+        args += sorted(scope)
     if wid:
         sql += " AND workflow_id=?"
         args.append(wid)

@@ -217,6 +217,132 @@ def test_lost_auto_apply_response_is_reconciled_from_history(tmp_path):
     assert sim.puts == 1
 
 
+class UnreachableSim(FakeSim):
+    """Every request fails before reaching the simulator: nothing lands, the client sees a transport error."""
+
+    def propose(self, body):
+        self.posts += 1
+        raise ApiError(0, "transport", "connection refused")
+
+
+def test_uncertain_requests_back_off_then_dead_letter_then_replay(tmp_path):
+    from controller import settings as S
+    from controller.governance import replay
+    sim = UnreachableSim()
+    s = Store(str(tmp_path / "c.db"))
+    g = Governance(s, sim, {"wf": workflow()})
+    g.callbacks["t"] = Recorder()
+    iid = g.file_intent(600, "wf", "k", "t:1", VOICE, summary="s", rationale="r")
+    g.submit(600, "wf")
+    sends_at = [600]
+    for minute in range(615, 1400, 15):          # looked up every tick, re-sent only on its backoff slot
+        before = sim.posts
+        g.reconcile(minute)
+        if sim.posts > before:
+            sends_at.append(minute)
+    assert len(sends_at) == S.REQUEST_MAX_ATTEMPTS
+    gaps = [b - a for a, b in zip(sends_at, sends_at[1:])]
+    assert gaps == [15, 30, 60, 120, 120, 120, 120]
+    p = s.one("SELECT * FROM proposals")
+    assert p["status"] == "dead"
+    assert s.one("SELECT severity FROM alerts WHERE alert_key=?", (f"dead:{p['proposal_id']}",))["severity"] == "page"
+    assert s.one("SELECT status FROM intents WHERE intent_id=?", (iid,))["status"] == "in_proposal"   # parked
+    g.reconcile(1500)
+    assert sim.posts == S.REQUEST_MAX_ATTEMPTS                                  # dead means no more sends
+    # the operator fixes the network and replays: same proposal_id, fresh attempts, it goes out once
+    sim.__class__ = FakeSim
+    assert "back to prepared" in replay(s, p["proposal_id"], 1500)
+    g.reconcile(1515)
+    p = s.one("SELECT * FROM proposals")
+    assert p["status"] == "pending" and p["approval_id"] == "apr_00001" and len(sim.apps) == 1
+
+
+def test_operator_can_cancel_a_dead_request(tmp_path):
+    from controller import settings as S
+    from controller.governance import replay
+    sim = UnreachableSim()
+    s = Store(str(tmp_path / "c.db"))
+    g = Governance(s, sim, {"wf": workflow()})
+    rec = Recorder()
+    g.callbacks["t"] = rec
+    iid = g.file_intent(600, "wf", "k", "t:1", VOICE, summary="s", rationale="r")
+    g.submit(600, "wf")
+    for minute in range(615, 1400, 15):
+        g.reconcile(minute)
+    pid = s.one("SELECT proposal_id FROM proposals")["proposal_id"]
+    assert sim.posts == S.REQUEST_MAX_ATTEMPTS
+    assert "cancel requested" in replay(s, pid, 1500, cancel=True)
+    assert s.one("SELECT resolved_minute FROM alerts WHERE alert_key=?", (f"dead:{pid}",))["resolved_minute"] == 1500
+    assert s.one("SELECT status FROM intents WHERE intent_id=?", (iid,))["status"] == "in_proposal"  # not yet
+    g.reconcile(1515)                       # the lookup confirms it never landed: now it is cancelled
+    assert s.one("SELECT status FROM proposals")["status"] == "cancelled"
+    assert s.one("SELECT status FROM intents WHERE intent_id=?", (iid,))["status"] == "returned"
+    assert rec.returned == [(iid, "cancelled")]                                 # the owner heard back
+    assert sim.posts == S.REQUEST_MAX_ATTEMPTS
+
+
+class LandsOnLastSendSim(FakeSim):
+    """Sends fail before reaching the simulator, except the last one before dead-lettering: it lands, but its
+    response is lost."""
+
+    def propose(self, body):
+        from controller import settings as S
+        if self.posts + 1 < S.REQUEST_MAX_ATTEMPTS:
+            self.posts += 1
+            raise ApiError(0, "transport", "connection refused")
+        super().propose(body)
+        raise ApiError(0, "transport", "connection reset after send")
+
+
+def _dead_letter(tmp_path, sim):
+    s = Store(str(tmp_path / "c.db"))
+    g = Governance(s, sim, {"wf": workflow()})
+    rec = Recorder()
+    g.callbacks["t"] = rec
+    iid = g.file_intent(600, "wf", "k", "t:1", VOICE, summary="s", rationale="r")
+    g.submit(600, "wf")
+    for minute in range(615, 1400, 15):
+        g.reconcile(minute)
+        if s.one("SELECT status FROM proposals")["status"] == "dead":
+            break                                       # stop at the tick it was dead-lettered
+    return s, g, rec, iid, s.one("SELECT * FROM proposals")
+
+
+def test_a_dead_request_whose_last_send_landed_is_still_found_and_applied(tmp_path):
+    """Regression (review): dead-lettering used to stop reconciliation, so an approval created by the final send
+    (response lost) was never tracked or applied. Dead now means no more sends, never no more lookups."""
+    from controller import settings as S
+    sim = LandsOnLastSendSim()
+    s, g, rec, iid, p = _dead_letter(tmp_path, sim)
+    assert p["status"] == "dead" and len(sim.apps) == 1                        # it landed; we could not know
+    g.reconcile(1410)                                                           # the next lookup finds it
+    p = s.one("SELECT * FROM proposals")
+    assert p["status"] == "pending" and p["approval_id"] == "apr_00001"
+    assert s.one("SELECT resolved_minute FROM alerts WHERE alert_key=?", (f"dead:{p['proposal_id']}",))[
+        "resolved_minute"] == 1410
+    assert s.q("SELECT * FROM decisions WHERE kind='request_landed'")
+    sim.minute = 1420
+    sim.decide("apr_00001", "approved")
+    g.reconcile(1425)
+    g.reconcile(1440)
+    assert s.one("SELECT status FROM proposals")["status"] == "applied" and rec.applied == [(iid, 2)]
+    assert sim.posts == S.REQUEST_MAX_ATTEMPTS and len(sim.apps) == 1          # adopted, never re-sent
+
+
+def test_cancelling_a_dead_request_that_landed_adopts_it_instead(tmp_path):
+    """An operator's cancel cannot orphan a live approval: the loop checks the simulator before cancelling."""
+    from controller.governance import replay
+    sim = LandsOnLastSendSim()
+    s, g, rec, iid, p = _dead_letter(tmp_path, sim)
+    assert p["status"] == "dead"
+    replay(s, p["proposal_id"], 1405, cancel=True)      # the operator acts before the next lookup
+    g.reconcile(1410)
+    assert s.one("SELECT status FROM proposals")["status"] == "pending"
+    assert s.one("SELECT status FROM intents WHERE intent_id=?", (iid,))["status"] == "in_proposal"
+    assert not rec.returned
+    assert "cancel is moot" in s.one("SELECT summary FROM decisions WHERE kind='request_landed'")["summary"]
+
+
 def test_definite_refusal_still_fails_and_returns(env):
     s, sim, g, rec, *_ = env
 

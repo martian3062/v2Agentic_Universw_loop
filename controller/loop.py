@@ -23,6 +23,7 @@ from .experiments import Experiments
 from .governance import Governance
 from .incidents import Incidents, baselines
 from .ingest import Ingestor
+from .leases import LeaseLost, Leases
 from .util import fmt
 
 log = logging.getLogger("controller")
@@ -87,37 +88,56 @@ def continuity(s: Store, sim, st: dict) -> str | None:
     return None
 
 
-def open_store(db_path: str, sim: Sim) -> Store:
-    """Resume if the DB belongs to this world; archive it and start fresh if it belongs to another one."""
+def _archive(db_path: str) -> str:
+    arch = f"{db_path}.{int(time.time())}.old"
+    for suffix in ("", "-wal", "-shm"):
+        if os.path.exists(db_path + suffix):
+            shutil.move(db_path + suffix, arch + suffix)
+    return arch
+
+
+def _world_now(sim: Sim) -> tuple[dict, dict]:
     st = sim.state()
     hist = sim.chunks(kind="history")
-    fp = {"scenario": st["scenario"], "end_minute": st["end_minute"],
-          "history_last_event_id": max((c["last_event_id"] for c in hist), default=0)}
+    return st, {"scenario": st["scenario"], "end_minute": st["end_minute"],
+                "history_last_event_id": max((c["last_event_id"] for c in hist), default=0)}
+
+
+def open_store(db_path: str, sim: Sim) -> tuple[Store, Leases]:
+    """Resume if the DB belongs to this world; archive it and start fresh if it belongs to another one.
+    The world lease is taken FIRST: a store that another live controller is using is never resumed alongside
+    it, and never archived from under it (this process waits, then exits, instead). The world is read only AFTER
+    the lease is held: while we waited, the previous holder may have advanced the simulator and the store, and a
+    snapshot from before the wait would make a valid store look like it came from the future."""
     if os.path.exists(db_path):
         s = Store(db_path)
+        leases = Leases(s)
+        leases.acquire_or_wait(["world"])
+        st, fp = _world_now(sim)
         old = s.get("fingerprint")
         why = "different scenario fingerprint" if old != fp else continuity(s, sim, st)
         if why is None:
             log.info("resuming from %s (last seen %s, world at %s)", db_path, fmt(s.get("last_minute", -1)),
                      fmt(st["sim_minute"]))
-            return s
+            return s, leases
+        leases.release()
         s.db.close()
-        arch = f"{db_path}.{int(time.time())}.old"
-        for suffix in ("", "-wal", "-shm"):
-            if os.path.exists(db_path + suffix):
-                shutil.move(db_path + suffix, arch + suffix)
+        arch = _archive(db_path)
         log.warning("store %s belongs to another world (%s); archived to %s", db_path, why, arch)
     s = Store(db_path)
+    leases = Leases(s)
+    leases.acquire_or_wait(["world"])
+    _, fp = _world_now(sim)
     with s:
         s.set("fingerprint", fp)
         s.set("created_wall", time.time())
-    return s
+    return s, leases
 
 
 class Controller:
     def __init__(self, url: str, db_path: str):
         self.sim = Sim(url)
-        self.s = open_store(db_path, self.sim)
+        self.s, self.leases = open_store(db_path, self.sim)
         wfs = self.s.get("workflows")
         if not wfs:
             wfs = {w["workflow_id"]: w for w in self.sim.workflows()}
@@ -127,7 +147,10 @@ class Controller:
                     self.s.x("INSERT OR REPLACE INTO workflows VALUES(?,?,?)",
                              (w["workflow_id"], w["tenant_id"], json.dumps(w)))
         self.wfs = wfs
+        # one controller per workflow: wait for any live holder, then exit rather than act alongside it
+        self.leases.acquire_or_wait([f"workflow:{w}" for w in wfs])
         self.gov = Governance(self.s, self.sim, wfs)
+        self.gov.leases = self.leases           # fencing: every write to the simulator checks the lease first
         self.ing = Ingestor(self.s, self.sim)
         self.ing.listeners.append(self.gov.on_event)
         self.inc = Incidents(self.s, self.sim, self.gov, wfs)
@@ -174,6 +197,7 @@ class Controller:
         self.bootstrap(st["sim_minute"])
         while True:
             minute = st["sim_minute"]
+            self._keep_leases(minute)
             t0 = time.perf_counter()
             events = self.ing.catch_up()      # not guarded: without data every later step is blind
             t1 = time.perf_counter()
@@ -189,8 +213,10 @@ class Controller:
             if st["finished"]:
                 self._metrics(minute, events, t1 - t0, t2 - t1, 0.0, st)
                 self._finish(minute)
+                self.leases.release()
                 return
             step = self.step_minutes(minute, st["end_minute"])
+            self._keep_leases(minute)         # only the holder of the world lease moves the clock
             try:
                 self.sim.advance(step, expect_from=minute)
             except ApiError as e:
@@ -202,6 +228,15 @@ class Controller:
             self._metrics(minute, events, t1 - t0, t2 - t1, t3 - t2, st)
             st = self.sim.state()
 
+    def _keep_leases(self, minute: int):
+        """Renew every lease; if any was taken over, stop acting at once (fail-stop, never two writers)."""
+        lost = self.leases.renew()
+        if lost:
+            with self.s:
+                self.s.alert("leases_lost", minute, "page", None,
+                             f"controller {self.leases.owner} lost leases {lost}; it stopped acting")
+            raise LeaseLost(f"lost leases {lost}; another controller took over, stopping")
+
     def _guard(self, minute: int, name: str, fn, *args):
         """A bug in one module must not stop the loop: the failed step changed nothing (every step is one
         transaction), it pages, and the next tick tries again. Repeated failures stay one open alert."""
@@ -210,6 +245,8 @@ class Controller:
             if self._failing.pop(name, None):
                 with self.s:
                     self.s.resolve_alert(f"step_failed:{name}", minute)
+        except LeaseLost:
+            raise                       # never isolated: losing a lease means this process must stop
         except ApiError as e:
             log.warning("%s: simulator error %s; retrying next tick", name, e)
         except Exception as e:  # noqa: BLE001 - deliberate: isolate faults per step

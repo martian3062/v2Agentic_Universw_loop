@@ -28,6 +28,8 @@ python -m controller why    --workflow nw_renewal --at "D3 14:00"   # why did X 
 python -m controller view   [--workflow ks_cancel]                  # the supervisor's one screen
 python -m controller health                                         # loop health: throughput, lag, credits, pages
 python -m controller log    [--workflow X] [--kind applied]          # the raw decision log
+python -m controller view   --tenant kestrel_finance                # one client's view: its workflows only
+python -m controller replay --proposal <id> [--cancel]              # operator action on a dead-lettered request
 ```
 
 ## Shape
@@ -52,7 +54,8 @@ python -m controller log    [--workflow X] [--kind applied]          # the raw d
 | `incidents.py` | C8 hallucination response, KPI drift alerts, the incident records. |
 | `experiments.py` | C6/C7: experiment lifecycle on shared cohorts, interim, segment carve-outs, promotion, decay, rollback. |
 | `estimates.py` | C10: affected leads, dry-run replay, conservative gain behind the impact score. |
-| `audit.py` | C11/C12/C14 read-only views. |
+| `audit.py` | C11/C12/C14 read-only views, optionally scoped to one tenant (`--tenant`). |
+| `leases.py` | One controller process per world and per workflow: heartbeat leases, takeover from a dead or silent holder, fencing before every write. |
 | `settings.py` | Every threshold, with the reason for its value; tenant preferences stricter than policy. |
 
 ## Decision rules (short form; numbers live in settings.py)
@@ -108,6 +111,11 @@ intent: ready -> in_proposal -> applied | returned (rejected/expired/stale/lapse
 proposal (approval): prepared -> pending -> approved -> applied
                                           \-> rejected | expired         \-> stale (409) | lapsed (410, pages)
 proposal (auto):     prepared -> applied | refused (403: intents switch to the approval path)
+uncertain send:      prepared -> (looked up every tick; re-sent at +15/30/60/120 min) -> ... -> dead after 8 sends
+dead:                no more sends, still looked up every tick -> pending | applied (it had landed after all)
+                     | prepared (operator replay, same proposal_id) | cancelling (operator cancel)
+cancelling:          -> cancelled once a lookup confirms it never landed (intents back to owners, with callbacks)
+                     | pending | applied (it had landed: adopted, the cancel is moot)
 ```
 
 `prepared` rows are the crash-safety hinge. The `proposal_id` is committed before the request is sent. A
@@ -130,6 +138,8 @@ every tick without blocking the others.
 | alert | severity | what it means | what to do |
 |---|---|---|---|
 | `step_failed:<step>` | page | a controller step raised; the step changed nothing (one transaction) and is retried every tick | read the traceback in stderr; the loop keeps running |
+| `dead:<proposal>` | page | a request's outcome stayed unknown through 8 sends (simulator unreachable or failing); no more sends, but it is still looked up every tick and the page resolves itself if it turns out to have landed; its intents are parked | fix the simulator/network, then `python -m controller replay --proposal <id>` (same id, so a request that did land is adopted, not duplicated), or `--cancel` to hand the work back to its owners (applied on the next tick that confirms it never landed) |
+| `leases_lost` | page | another controller took over this one's leases (it was paused past the TTL, or a second instance started); this one stopped acting | make sure exactly one controller runs per store; the survivor carries on |
 | `reconcile_failed:<proposal>` | page | reconciling one request failed (a callback raised); nothing was recorded, it is retried every tick | read the traceback; the other requests are unaffected |
 | `lapsed:<proposal>` | page | an approved change was not applied within `apply_window_hours` | should not happen (we poll every 15 min); check the process was up and the clock advancing |
 | `incident_age:<id>` | page | an incident open > 6h | `why`/`log` for the workflow; typical causes are approvals waiting for approver hours, or no validated fix |

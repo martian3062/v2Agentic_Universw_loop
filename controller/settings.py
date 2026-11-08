@@ -92,6 +92,19 @@ REJECTION_COOLDOWN_HOURS = 24   # before a dimension is tested again after an ex
 RETRY_AFTER_REJECTION_MIN = {"experiment_start": 12 * 60, "experiment_promote": 4 * 60,
                              "experiment_drop_arm": 60, "experiment_stop": 60, "experiment_rollback": 60}
 MAX_ATTEMPTS_PER_INTENT = 3
+# A request whose outcome is unknown (transport error or 5xx after the client's own retries) is looked up by
+# proposal_id every tick and re-sent with the same id on a backoff: 15, 30, 60, then 120 simulated minutes.
+# After REQUEST_MAX_ATTEMPTS sends it is dead-lettered: no more sends (~10 simulated hours in total), but it is
+# still looked up every tick, because the last send may have landed with its response lost (then it is adopted).
+# A human is paged and its intents stay parked until it turns up or `python -m controller replay` re-sends it
+# or cancels it (a cancel takes effect only once a lookup confirms it never landed).
+REQUEST_RETRY_BASE_MIN = 15
+REQUEST_RETRY_CAP_MIN = 120
+REQUEST_MAX_ATTEMPTS = 8
+
+# ---------------------------------------------------------------- leases (controller/leases.py)
+LEASE_TTL_S = 120          # wall-clock seconds without a heartbeat before a lease can be taken over
+LEASE_WAIT_S = 130         # how long a second controller waits for leases before exiting
 
 # ---------------------------------------------------------------- impact score
 IMPACT_SCALE_LEADS_PER_DAY = 50.0   # impact = 1 - exp(-conservative extra concluded leads per day / 50)
