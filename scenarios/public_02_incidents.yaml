@@ -1,6 +1,6 @@
-# Public scenario 2 — incidents: a caller ID gets spam-flagged, a client supervisor ships a bad prompt
-# mid-day, and another supervisor edits config mid-experiment. Same rule as scenario 1: your controller
-# must not read anything below "hidden ground truth"; we grade on hidden scenarios.
+# Incident benchmark: a caller ID is spam-flagged, a supervisor changes a prompt,
+# and another supervisor edits configuration during an experiment.
+# The controller uses HTTP evidence only; reference-model values remain in the simulator.
 name: public_02_incidents
 seed: 202
 days: 10
@@ -250,7 +250,7 @@ prompts:
     summary: 'Supervisor edit: adds payment-urgency language and benefit claims'
     halluc: 0.055
     engage_mult: 0.93
-# ---- hidden ground truth (do not read from your controller) ----
+# ---- simulator reference model (do not read from your controller) ----
 did_l0_per_dph: 30
 did_tau_days: 2
 effects:

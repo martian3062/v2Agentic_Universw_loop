@@ -48,7 +48,7 @@ HAL_VERIFY_MAX_CONNECTED = 1200  # an inconclusive engagement drop keeps verific
 PRIMARY_ENGAGEMENT_MAX_DROP = 0.02
 HAL_VERIFY_HOURS = 3
 CREDIT_RESERVE = 30       # never spend below this except to resolve an open incident's validation
-# Stakeholder 04 (Kestrel ops): a vendor "fix" that read the compliance script verbatim killed
+# Operations use case: a verbatim compliance-script fix can reduce
 # engagement. We rank such candidates last; they are still used if nothing else passes validation.
 DISFAVOURED_FIX_WORDS = ("verbatim", "word for word", "word-for-word", "strict")
 
@@ -75,7 +75,7 @@ EXPERIMENT_DIMS_BY_PRIMARY = {
     "pickup_rate": (),
 }
 SUPERVISOR_RESPECT_HOURS = 7 * 24  # a supervisor's manual choice on a dimension is a decision: we stop
-                                   # experimenting on that dimension for a week (stakeholders/04)
+                                   # experimenting on that dimension for a week (use_cases/operations.md)
 SEGMENT_FEATURES = ("lang", "city_tier", "age_band", "value_band")
 SEGMENT_MIN_ARM_N = 200   # per arm inside a segment before the segment is analysed at all
 SEGMENT_ALPHA = 0.05      # family-wise level for all segment claims of one experiment (always-valid, Bonferroni over
@@ -130,8 +130,8 @@ class TenantPreference:
 TENANT_PREFERENCES = {
     "kestrel_finance": TenantPreference(
         earliest_request_hour=11, max_requests_per_day=2,
-        notes=["stakeholders/04: never before 11:00 (standups), two requests a day maximum"]),
+        notes=["operations policy: never before 11:00, two requests a day maximum"]),
     "northwind_life": TenantPreference(
         human_approval_for_customer_facing=True,
-        notes=["stakeholders/02: named human approval for anything a customer hears, rollbacks included"]),
+        notes=["compliance policy: named human approval for anything a customer hears, rollbacks included"]),
 }

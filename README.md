@@ -1,18 +1,22 @@
 # Outcome-First Agent Loop
 
+**Hackathon-style simulation project** for governed optimisation of outbound voice workflows.
+
 An always-on controller that watches every outbound-calling workflow and, on its own evidence, detects problems,
 runs experiments, asks humans for permission in a form they can say yes to, applies what was approved, and rolls
 back what stops working. Every decision is explainable from its own store.
 
 - The platform requirements are in [docs/REQUIREMENTS.md](docs/REQUIREMENTS.md), and the simulator contract is in
   [docs/SIMULATOR.md](docs/SIMULATOR.md).
-- The design argument, stakeholder replies and results are in [DESIGN.md](DESIGN.md).
+- The architecture, use cases and benchmark results are in [DESIGN.md](DESIGN.md).
 - The runbook for the engineer on call is [docs/CONTROLLER.md](docs/CONTROLLER.md).
 - The [architecture overview](deliverables/Outcome_First_Agent_Loop_Architecture.pdf) and [source archive](deliverables/Outcome_First_Agent_Loop_code.zip) provide a portable handoff.
 
 ## At a glance
 
-Final runs on the public scenarios, graded by `python -m sim grade` against the no-op baseline:
+Representative hackathon benchmarks across three bundled scenarios, compared with a no-op controller.
+Each row below comes from one complete simulation run; repeated runs vary with approver decisions and workflow responses.
+The summary command is `python -m sim grade`.
 
 | scenario | leads concluded vs baseline | changes applied | harmful |
 |---|---|---|---|
@@ -270,18 +274,19 @@ scripts/
   run_scenario.py  serve + run + grade; refuses to overwrite evidence or grade a failed run
   crash_test.py    8 hard kills and 7 invariants
 tests/ctl/         77 controller tests (end-to-end smoke run, failure paths, leases, statistics, governance, incidents, caller ID)
-reports/           grader output for public_01, public_02, public_03_load; crash-recovery report
+reports/           benchmark summaries for public_01, public_02, public_03_load; crash-recovery report
 docs/CONTROLLER.md runbook: alerts -> actions, lifecycles, how to extend
 docs/REQUIREMENTS.md platform requirements and capability catalogue
+use_cases/         sales, compliance, operations, product and reliability requirements
 deliverables/      architecture PDF, diagrams and source archive
-DESIGN.md      the design argument, stakeholder replies, results, weaknesses
+DESIGN.md      architecture, use-case decisions, benchmark results and limitations
 ```
 
 ## Evidence
 
 | file | what it shows |
 |---|---|
-| [reports/public_01.md](reports/public_01.md) | Grader output for the development scenario |
-| [reports/public_02.md](reports/public_02.md) | Grader output for the incident scenario (flagged number, bad prompt, supervisor edit) |
-| [reports/public_03_load.md](reports/public_03_load.md) | Grader output for the 12-workflow load scenario; timings in [DESIGN.md §8](DESIGN.md) |
+| [reports/public_01.md](reports/public_01.md) | Benchmark summary for the development scenario |
+| [reports/public_02.md](reports/public_02.md) | Benchmark summary for the incident scenario (flagged number, bad prompt, supervisor edit) |
+| [reports/public_03_load.md](reports/public_03_load.md) | Benchmark summary for the 12-workflow load scenario; timings in [DESIGN.md §8](DESIGN.md) |
 | [reports/crash_recovery_public_02_incidents.md](reports/crash_recovery_public_02_incidents.md) | Kill points, invariant checks, outcome of the crashed run |

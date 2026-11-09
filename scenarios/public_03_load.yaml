@@ -1,5 +1,5 @@
-# Public scenario 3 — load: 12 workflows, ~650k dials/day (≈2 crore/month), 5 days.
-# Use it to prove your system keeps up. Hidden truth mirrors scenario 1 per workflow type.
+# Load benchmark: 12 workflows, ~650k dials/day, 5 days.
+# The reference model mirrors the development benchmark for each workflow type.
 name: public_03_load
 seed: 303
 days: 5
@@ -896,7 +896,7 @@ prompts:
     summary: 'Strict: near-verbatim compliance script'
     halluc: 0.003
     engage_mult: 0.86
-# ---- hidden ground truth (do not read from your controller) ----
+# ---- simulator reference model (do not read from your controller) ----
 did_l0_per_dph: 30
 did_tau_days: 2
 effects:

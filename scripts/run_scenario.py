@@ -18,7 +18,7 @@ import time
 import httpx
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-ENV = {**os.environ, "PYTHONUTF8": "1"}   # the grader writes Unicode; Windows consoles default to cp1252
+ENV = {**os.environ, "PYTHONUTF8": "1"}   # the benchmark summary uses Unicode; Windows consoles default to cp1252
 
 
 def wait_health(url: str, proc: subprocess.Popen, timeout: float = 300):

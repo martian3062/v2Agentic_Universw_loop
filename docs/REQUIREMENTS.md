@@ -1,12 +1,12 @@
 # Platform requirements
 
-**Outcome-First Agent Loop** - Outbound voice workflow optimisation
+**Outcome-First Agent Loop** - Hackathon-style simulation and benchmarking
 
 ---
 
 ## 1. Context
 
-Formi runs outbound voice agents for insurers and lenders across India: renewal reminders, KYC follow-ups,
+The simulation models outbound voice workflows for insurers and lenders: renewal reminders, KYC follow-ups,
 cancellation reconfirmations. Each **workflow** dials leads within a business-set window, following a retry
 cadence the business configures. Today a human sets the agent's configuration once and rarely revisits it.
 That configuration covers which welcome message it opens with, which voice it uses, which caller ID it dials
@@ -43,8 +43,7 @@ The **controller** is an always-on service that, for every workflow on the platf
 
 `sim/` contains a **closed-loop simulator** of the world: tenants,
 workflows, leads, a dialler, people who pick up or don't, client approvers, client supervisors who edit things
-mid-day, and an LLM that suggests prompt fixes. The controller drives it over HTTP. The simulator holds
-hidden ground truth: which variants actually work, for whom, for how long, and what happens when you change
+mid-day, and an LLM that suggests prompt fixes. The controller drives it over HTTP. The simulator uses a reference model to represent which variants actually work, for whom, for how long, and what happens when you change
 things. The API contract is documented in **[SIMULATOR.md](SIMULATOR.md)**.
 
 ## 3. Scale envelope
@@ -66,7 +65,7 @@ scenarios/
   public_01_dev.yaml      3 workflows, 8 days, no incidents — start here
   public_02_incidents.yaml  caller ID flagged, a supervisor ships a bad prompt, a supervisor edits mid-experiment
   public_03_load.yaml     12 workflows at full scale, 5 days
-stakeholders/             business, compliance, operations and platform requirements
+use_cases/                sales, compliance, operations, product and reliability requirements
 examples/naive_controller.py   shows the API round-trip. It is deliberately bad.
 docs/SIMULATOR.md         API, config, governance, events
 DESIGN.md                 architecture, scope decisions and validation results
@@ -89,7 +88,7 @@ python -m sim grade --run runs/mine01 --baseline runs/base01 --out reports/publi
 
 ## 5. Constraints that are not up for negotiation
 
-These requirements apply to every workflow and take precedence over stakeholder preferences.
+These requirements apply to every workflow and take precedence over role-specific preferences.
 
 1. **The governance boundary is absolute.** Every change your controller makes goes through `/approvals` or a
    policy-permitted auto-apply. Supervisor edits are a fact of life. You don't overwrite them silently.
@@ -127,12 +126,12 @@ Implementation status and scope decisions are recorded in [DESIGN.md](../DESIGN.
 | C14 | Observability of the loop itself: ingest lag, decisions/hour, credit burn, alerts an on-call engineer can act on |
 | C15 | Fair allocation of credits and approver attention across tenants |
 
-## 7. Validation and stakeholder requirements
+## 7. Benchmark validation and use cases
 
 The controller must complete the development and incident scenarios without manual steps, retain a
 queryable audit trail, respect the constraints above, and recover correctly after a process kill.
 The load scenario measures throughput, decision lag and memory; results are kept in `reports/`.
 
-`stakeholders/` contains requirements from Sales, Compliance, Platform/SRE, Operations, Product and the CTO.
-Reconcile their preferences with workflow policies. Decisions and rationale are documented in
-[DESIGN.md](../DESIGN.md#3-stakeholders).
+[use_cases/](../use_cases/) contains role-based technical briefs for Sales, Compliance, Platform/SRE, Operations,
+Product and Architecture. Each case uses modelled workflow policies. Implementation choices and rationale
+are documented in [DESIGN.md](../DESIGN.md#3-use-cases-and-policy-decisions).

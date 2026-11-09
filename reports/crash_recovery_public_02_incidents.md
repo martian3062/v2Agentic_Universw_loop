@@ -27,7 +27,7 @@ The controller was started 9 times and hard-killed 8 times (SIGKILL / TerminateP
 | no approved change lapsed | PASS | lapsed: none |
 | every chunk ingested exactly once | PASS | 492 chunks listed, 492 ingested |
 
-## Outcome of the crashed run (grader)
+## Outcome of the crashed benchmark run
 
 ## Outcomes vs baseline (no-op controller)
 

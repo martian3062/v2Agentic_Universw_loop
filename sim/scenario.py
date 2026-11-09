@@ -1,9 +1,9 @@
 """Scenario loading and static constants for the simulator.
 
 A scenario YAML describes the world: tenants, workflows, dialling capacity,
-lead batches, governance policy, and the hidden ground truth (effects,
-prompt quality, caller-ID health, incidents). Candidates see the public
-scenarios; graders run hidden ones with the same schema.
+lead batches, governance policy, and the simulator reference model (effects,
+prompt quality, caller-ID health, incidents). Bundled and additional benchmark scenarios
+use the same schema with different effects and policies.
 """
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ AGENT_DIMS = ["welcome_message", "voice", "caller_id"]
 # Dimensions used in diffs / governance policy.
 CHANGE_DIMS = ["cohorts", "welcome_message", "voice", "caller_id", "prompt_version", "schedule"]
 
-# Hidden time-of-day pickup archetypes. Index = hour of day (0..23).
+# Reference time-of-day pickup archetypes. Index = hour of day (0..23).
 _ARCH = {
     "morning": [.2] * 8 + [1.0, 1.6, 1.6, 1.5, 1.0, 1.0, 0.9, 0.7, 0.7, 0.7, 0.6, 0.6, 0.6, 0.5, .2, .2],
     "lunch":   [.2] * 8 + [0.6, 0.8, 0.8, 1.0, 1.6, 1.6, 1.4, 0.9, 0.9, 0.8, 0.8, 0.8, 0.7, 0.6, .2, .2],

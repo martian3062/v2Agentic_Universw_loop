@@ -1,12 +1,12 @@
-"""The simulated world: leads, dialler, calls, hidden effects, governance.
+"""The simulated world: leads, dialler, calls, modelled effects, governance.
 
 The world advances in fixed ticks (default 15 sim-minutes). Each tick, for each
 workflow, it may upload a lead batch, then dials up to its hourly capacity from
 the eligible leads, choosing *who* to dial according to the active schedule and
 *which variant* according to the active allocations. Outcomes are drawn from a
-hidden model the candidate never sees directly.
+reference model that is outside the controller data boundary.
 
-Nothing in here is visible to a candidate's controller except through the HTTP
+Nothing in here is visible to the controller except through the HTTP
 API (`server.py`) and the event files written to the run directory.
 """
 from __future__ import annotations
@@ -244,7 +244,7 @@ class WorkflowState:
     def did_health(self) -> np.ndarray:
         return self.did_base / (1.0 + (self.did_load / self.did_l0) ** 2)
 
-    # ---- hidden-model helpers
+    # ---- reference-model helpers
     def where_mask(self, where: dict, pidx: np.ndarray) -> np.ndarray:
         m = np.ones(len(pidx), dtype=bool)
         for feat, vals in where.items():
@@ -720,7 +720,7 @@ class World:
         tier = rng.choice(3, k, p=spec.get("tier_mix", [0.4, 0.35, 0.25]))
         age = rng.choice(4, k, p=spec.get("age_mix", [0.25, 0.35, 0.25, 0.15]))
         val = rng.choice(3, k, p=spec.get("value_mix", [0.5, 0.35, 0.15]))
-        # archetype logits (hidden): morning, lunch, evening, flat
+        # reference archetype logits: morning, lunch, evening, flat
         L = np.tile(np.array([0.0, 0.0, 0.0, 0.3]), (k, 1))
         L[age == 3, 0] += 1.6
         L[age == 2, 0] += 0.6
@@ -926,7 +926,7 @@ class World:
         for e in w.effects:
             if not e.get("decay"):
                 continue
-            j = self.sc["effects"].index(e)  # global index, so the grader can label it
+            j = self.sc["effects"].index(e)  # global index, so the benchmark evaluator can label it
             start = w.exposure.get((e["dim"], e["value"]))
             if start is None or self.now < start + e["decay"]["after_exposure_days"] * MINUTES_PER_DAY:
                 continue

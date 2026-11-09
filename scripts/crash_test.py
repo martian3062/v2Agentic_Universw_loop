@@ -152,7 +152,7 @@ def write_report(name, a, starts, log, checks, grade_path):
     lines += [f"- {x}" for x in log]
     lines += ["", "## Invariants after the run", "", "| check | result | detail |", "|---|---|---|"]
     lines += [f"| {n} | {'PASS' if ok else 'FAIL'} | {d} |" for n, ok, d in checks]
-    lines += ["", "## Outcome of the crashed run (grader)", "", grade.split("\n", 1)[1].strip(), "",
+    lines += ["", "## Outcome of the crashed benchmark run", "", grade.split("\n", 1)[1].strip(), "",
               f"Full grade: `{grade_path}`"]
     p = os.path.join(ROOT, "reports", f"crash_recovery_{name}.md")
     open(p, "w", encoding="utf-8").write("\n".join(lines) + "\n")

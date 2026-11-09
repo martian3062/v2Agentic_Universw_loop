@@ -63,7 +63,7 @@ def grade(run_dir: str, baseline_dir: str) -> dict:
         delta[wid] = {m: (k[wid][m] / bk[wid][m] - 1) if bk[wid].get(m) else None
                       for m in ("conclusion_rate", "pickup_rate", "engagement_rate")}
 
-    # --- changes made by the controller, judged against hidden truth at apply time
+    # --- changes made by the controller, judged against simulation reference values at apply time
     ctrl = [c for c in changes if c["actor"].startswith("controller")]
     judged = []
     for c in ctrl:

@@ -1,9 +1,9 @@
 # Simulator reference
 
-The simulator is the outside world: the dialler, the leads, the people who pick up (or don't), the client's
-approvers and an LLM you can ask for prompt fixes. Your controller talks to it **only over HTTP**. Treat
-everything in `sim/` and everything under `# ---- hidden ground truth` in a scenario file as unknown to you —
-we grade on hidden scenarios with the same schema and different truth.
+The simulator is the benchmark environment: the dialler, leads, call outcomes, approvers and a prompt-suggestion
+service. The controller interacts with it **only over HTTP**. Simulator internals and the reference model in
+scenario YAML files are used to generate outcomes and benchmark summaries; they are outside the controller's
+data boundary. Additional benchmark scenarios can use the same schema with different effects and policies.
 
 ```
 python -m sim serve --scenario scenarios/public_01_dev.yaml --run-dir runs/mine     # → http://127.0.0.1:8700/docs
@@ -182,11 +182,10 @@ has both false positives and false negatives.
 `GET /sim/state` · `GET /workflows` · `GET /workflows/{id}` · `GET /workflows/{id}/config` ·
 `GET /workflows/{id}/config/history` · `GET /health` — the full schema is at `/docs` when the server is running.
 
-## 8. Grading output
+## 8. Benchmark summaries
 
-`python -m sim grade` compares your run with a baseline run of the same scenario. It reports the KPIs and their
-change against baseline for each workflow, how much of the hidden engagement headroom you captured, every
-config change you applied and whether it was **harmful** / **neutral** / **beneficial** according to hidden
-truth at the moment you applied it, your governance behaviour, how long incidents took to fix, how quickly you
-moved off variants that stopped working, and credits used. You can see all of this for public scenarios. Use it
-to learn, not to overfit.
+`python -m sim grade` compares a completed run with a no-op run of the same scenario. The benchmark summary
+reports per-workflow KPIs and their changes, engagement headroom captured, configuration changes classified
+as **harmful**, **neutral** or **beneficial** by the simulator's reference model at apply time, governance
+behavior, incident recovery time, decay rollback and credits used. Use several seeds or scenarios to check
+whether an apparent improvement generalises beyond a single simulation run.
