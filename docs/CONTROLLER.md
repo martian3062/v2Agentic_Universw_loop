@@ -1,7 +1,7 @@
 # Controller: design, operation and runbook
 
 For the engineer who owns this loop. The simulator contract is in [SIMULATOR.md](SIMULATOR.md); the argument
-for every choice is in [../SUBMISSION.md](../SUBMISSION.md).
+for every choice is in [../DESIGN.md](../DESIGN.md).
 
 ## Run it
 
@@ -150,7 +150,7 @@ every tick without blocking the others.
 | `incident:<id>` | warn | an incident is open and being handled (it resolves itself when the incident does) | nothing, unless it turns into `incident_age` |
 | `did_out:<wf>:<num>` | warn | a number looks spam-labelled and is out of rotation | clear it with the carrier, then delete it from `cid:<wf>` in `meta` |
 | `drift:<wf>:pickup` | warn | workflow pickup well below history, not specific to one number | look at the dialler and the lead mix; no automatic action |
-| `slow_day:<d>` | warn | one simulated day took > 10 wall-clock minutes | see Scale in SUBMISSION.md |
+| `slow_day:<d>` | warn | one simulated day took > 10 wall-clock minutes | see Scale in DESIGN.md |
 
 ## Extending
 

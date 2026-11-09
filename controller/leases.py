@@ -12,7 +12,7 @@ that was paused, lost its lease and woke up can never send a change. A process t
 renewal stops acting (fail-stop) rather than risk two writers.
 
 Today one process takes every lease. The same table is what shards would use to split workflows between
-processes once the store is shared (see SUBMISSION.md section 8).
+processes once the store is shared (see DESIGN.md section 8).
 """
 from __future__ import annotations
 

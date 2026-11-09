@@ -1,13 +1,13 @@
-# Outcome-First Agent Loop — Submission
+# Outcome-First Agent Loop - Design and validation
 
-**Name:** Pardeep Singh (<sandhupardeep300@gmail.com>) · **Date:** 8 November 2026 · **Hours actually spent (be honest):** 5 · **Language / storage:** Python 3.12, stdlib + `httpx` (already in requirements) / one SQLite file (WAL)
+**Author:** Pardeep Singh | **Implementation:** Python 3.12, stdlib + `httpx` / SQLite (WAL)
 
 > How to run, debug and extend it: [docs/CONTROLLER.md](docs/CONTROLLER.md). Every threshold and the reason for its
 > value: [controller/settings.py](controller/settings.py).
 
 ---
 
-## 0. TL;DR
+## 0. Overview
 
 - An always-on controller that ingests every event into hourly and per-segment aggregates. It detects caller-ID degradation and hallucination spikes on populations, and runs always-valid experiments on welcome message and voice. Every change goes through governance as one batched, evidence-carrying request per workflow, and every decision lands in its own audit store.
 - **public_01: +16.1% leads concluded vs the no-op baseline, 12 changes applied, 1 harmful. public_02: +28.4%, 14 changes, 0 harmful. public_03_load (12 workflows): +21.8%, 57 changes, 1 harmful.** The two harmful changes are small: ending an undecided test back on the incumbent (−0.022), and a 10% probation probe of an untested caller ID that turned out bad (−0.041, detected and removed). In public_02 the spam-flagged number was off rotation 2h30m after the flag. The supervisor's bad prompt was detected 1h45m after it shipped and reverted through a human 2h30m after (grader MTTR 150 min).
@@ -25,8 +25,8 @@
 6. Customer-facing means welcome message, voice, prompt and cohorts. Those always go to a human, even where policy would allow auto-apply. The exception is a change that only moves traffic back toward what a human already approved (a rollback or a harmful-arm drop), which may auto-apply where policy allows. That exception never applies to a tenant that requires a named human for anything a customer hears: Northwind (stakeholder 02). There, rollbacks also go to the approver.
 7. Hallucination flags are a noisy but unbiased detector. The pre-D0 rate (~1.4% of connected calls) is "normal". Validation measures safety only, never engagement.
 8. An approver's latency counts within approver hours. A request with less approver time left than the worst-case latency is likely to wait overnight, and with a 12h TTL it can expire before morning (we observed this while probing the API).
-9. Tenant ids in hidden scenarios may differ. Tenant preferences ([settings.py](controller/settings.py)) apply only where the tenant id matches; otherwise policy plus the global rules apply.
-10. The store may be a local file. On the graders' box `./run.sh` writes `state/controller.db`. Before resuming, the store is checked against the simulator's own records: every chunk it ingested must be listed with the same event ids, every config version it recorded must be in the simulator's config history with the same actor and `proposal_id`, and every approval it holds must exist. A different scenario, or a fresh run of the same scenario (which looks identical by name and size), fails that check. The old store is then archived next to the new one and the controller starts fresh.
+9. Tenant ids in additional scenarios may differ. Tenant preferences ([settings.py](controller/settings.py)) apply only where the tenant id matches; otherwise policy plus the global rules apply.
+10. The store may be a local file. By default, `./run.sh` writes `state/controller.db`. Before resuming, the store is checked against the simulator's own records: every chunk it ingested must be listed with the same event ids, every config version it recorded must be in the simulator's config history with the same actor and `proposal_id`, and every approval it holds must exist. A different scenario, or a fresh run of the same scenario (which looks identical by name and size), fails that check. The old store is then archived next to the new one and the controller starts fresh.
 
 ## 2. Scope decisions
 
@@ -40,10 +40,10 @@
 | C6 | Variant experimentation | **Built** | The core learning loop | Thompson-style adaptive allocation once approvals allow it |
 | C7 | Promotion, decay, rollback | **Built** | Winners decay in this world ("for how long") | A larger holdout or periodic re-tests for partial decay (§13) |
 | C8 | Hallucination response | **Built** | A bad prompt is the costliest incident (customers misinformed) | Engagement-aware fix ranking from history |
-| C9 | Governance client | **Built** | The non-negotiable boundary; most of the review is about it | — |
+| C9 | Governance client | **Built** | Every configuration change must cross this boundary | — |
 | C10 | Impact, affected leads, dry runs | **Built** (honest, simple) | Approvers reject requests without them; Product ranks by impact | Per-lead counterfactuals |
 | C11 | Supervisor view | Partial (CLI) | One screen exists (`python -m controller view`), scoped per client with `--tenant` so a supervisor never sees another client's workflows; no UI | A read-only HTTP endpoint over the same queries, with the tenant taken from the caller's identity |
-| C12 | Decision/audit store | **Built** | Floor requirement and the live review | — |
+| C12 | Decision/audit store | **Built** | Traceable decisions and incident investigations | — |
 | C13 | Crash recovery, demonstrated | **Built** | SRE non-negotiable | — |
 | C14 | Loop observability | Partial | Per-tick metrics, page/warn alerts with a runbook (`health`); no external metrics push | Prometheus endpoint |
 | C15 | Fair allocation across tenants | **Cut** | Per-incident credit ceilings and per-workflow quotas exist; there is no global allocator | A credit budget per tenant per day |
@@ -54,7 +54,7 @@
 
 ### 01 — Nikhil Rao, VP Sales
 - **Accepted.** Speed where it is safe: experiments start in the first approver window of D0; caller-ID incidents are mitigated in minutes where policy allows auto-apply. Each workflow shows its pickup and engagement lift on one screen.
-- **Declined.** A single blended score: Product's definitions and the README both forbid blending. "Winning by lunch, live by evening": a winner needs ≥ 300 trials per arm, an always-valid test and to still be ahead over the last 24h; a 5 pp effect takes 5–9 days to prove at today's traffic. Rolling out the persuasive prompt (P4) wherever possible: a prompt change needs a validation run at ≥ 97% pass rate plus a human. In one of our test runs P4 scored 96.5% on `nw_renewal`.
+- **Declined.** A single blended score: Product's definitions and the platform requirements both forbid blending. "Winning by lunch, live by evening": a winner needs ≥ 300 trials per arm, an always-valid test and to still be ahead over the last 24h; a 5 pp effect takes 5–9 days to prove at today's traffic. Rolling out the persuasive prompt (P4) wherever possible: a prompt change needs a validation run at ≥ 97% pass rate plus a human. In one of our test runs P4 scored 96.5% on `nw_renewal`.
 - **Wrong against policy.** "Kestrel turned on auto-apply for everything": `ks_cancel` auto-applies only schedule, caller ID, welcome and voice, at most 20% of traffic per change, never prompts or cohorts. "Northwind is fine with auto-apply on KYC": `nw_kyc` has auto-apply disabled.
 - **Reply.** _Nikhil — you'll have a per-client number for the summit: pickup and engagement lift vs. a no-change baseline, side by side (we can't blend them; Product and our clients' contracts define them separately). The loop moves fast where it's safe: number rotation fixes in minutes, tests start on day one. Promotions need proof, though. A 5-point gain takes about a week to prove at today's volumes, and an unproven "winner" is how we'd end up explaining a bad week to Northwind's board. One correction: Kestrel auto-applies only four settings, in 20% steps, and Northwind's KYC flow has no auto-apply at all. The persuasive prompt hasn't passed safety validation yet._
 
@@ -280,7 +280,7 @@ In earlier iterations (fixed, each by a general rule):
 9. **Tuned on two public worlds.** Thresholds were chosen from base rates and error budgets, and several fixes came from failures in public runs. Each fix is a general rule (listed in §11), but some residual fit to the public truth is likely.
 10. **No cross-tenant fairness (C15)** beyond per-incident credit ceilings.
 
-## 14. If this went to production at Formi next month
+## 14. Production roadmap
 
 1. Move the store to the existing Postgres: same schema, one transaction per chunk, `proposal_id` reconciliation unchanged. Leases move with it (`SELECT ... FOR UPDATE SKIP LOCKED` to claim workflows), so several controller processes can split the workflows. In production there are no simulator chunks: events arrive as a stream, so the chunk checkpoint becomes an **event-level dedupe ledger**, one row per `(source, kind, event_id)` with a unique key, checked and marked in the same transaction as the aggregates it feeds. A redelivered event is recognised and counted once, across restarts and across processes. Shadow-run against production events with governance in "propose only" mode for a week, and compare our would-be requests with what supervisors did.
 2. Wire the per-call record (call id → `config_version`, variant, cohort) into the audit answer for IRDAI questions, and add the per-customer view.
